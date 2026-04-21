@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+.env
+
+# Node / Frontend
+node_modules/
+poc/frontend/dist/
+
+# LLM cache (large generated JSON files)
+poc/backend/cache/
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Stray pip artifact
+poc/backend/=*
+
+# Editor
+.vscode/
+.idea/
