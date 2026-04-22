@@ -197,9 +197,18 @@ async def upload_files(
     session_dir = UPLOAD_DIR / session_id
     session_dir.mkdir(parents=True, exist_ok=True)
 
+    existing_names = {
+        uf.filename for uf in
+        db.query(UploadedFile).filter(UploadedFile.session_id == session_id).all()
+    }
+
     saved = []
+    skipped = []
     for f in files:
         if not f.filename.lower().endswith(".pdf"):
+            continue
+        if f.filename in existing_names:
+            skipped.append(f.filename)
             continue
         dest = session_dir / f.filename
         content = await f.read()
@@ -213,12 +222,13 @@ async def upload_files(
         )
         db.add(uf)
         saved.append(f.filename)
+        existing_names.add(f.filename)
 
-    session.total_pdfs = len(saved)
+    session.total_pdfs = db.query(UploadedFile).filter(UploadedFile.session_id == session_id).count() + len(saved)
     session.status = "uploading"
     db.commit()
 
-    return {"files_uploaded": len(saved), "filenames": saved}
+    return {"files_uploaded": len(saved), "filenames": saved, "skipped_duplicates": skipped}
 
 
 @app.post("/api/sessions/{session_id}/extract")
@@ -283,9 +293,18 @@ async def add_files_to_session(
     session_dir = UPLOAD_DIR / session_id
     session_dir.mkdir(parents=True, exist_ok=True)
 
+    existing_names = {
+        uf.filename for uf in
+        db.query(UploadedFile).filter(UploadedFile.session_id == session_id).all()
+    }
+
     new_file_ids = []
+    skipped = []
     for f in files:
         if not f.filename.lower().endswith(".pdf"):
+            continue
+        if f.filename in existing_names:
+            skipped.append(f.filename)
             continue
         dest = session_dir / f.filename
         content = await f.read()
@@ -301,6 +320,16 @@ async def add_files_to_session(
         db.add(uf)
         db.flush()
         new_file_ids.append(uf.id)
+        existing_names.add(f.filename)
+
+    if not new_file_ids:
+        return {
+            "files_uploaded": 0,
+            "skipped_duplicates": skipped,
+            "session_id": session_id,
+            "status": session.status,
+            "message": "All files already exist in this session — nothing to extract.",
+        }
 
     session.total_pdfs = db.query(UploadedFile).filter(UploadedFile.session_id == session_id).count()
     session.status = "extracting"
@@ -309,7 +338,12 @@ async def add_files_to_session(
     db.commit()
 
     background_tasks.add_task(_run_incremental_bg, session_id, new_file_ids)
-    return {"files_uploaded": len(new_file_ids), "session_id": session_id, "status": "extracting"}
+    return {
+        "files_uploaded": len(new_file_ids),
+        "skipped_duplicates": skipped,
+        "session_id": session_id,
+        "status": "extracting",
+    }
 
 
 @app.get("/api/sessions/{session_id}/status")

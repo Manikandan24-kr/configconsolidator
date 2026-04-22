@@ -734,7 +734,17 @@ function AddFilesModal({ sessionId, onClose, onStarted }) {
         method: 'POST',
         body: formData,
       });
-      if (!res.ok) throw new Error((await res.json()).detail || 'Upload failed');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Upload failed');
+      if (data.files_uploaded === 0) {
+        setError(`All selected files already exist in this session: ${data.skipped_duplicates.join(', ')}`);
+        setUploading(false);
+        return;
+      }
+      if (data.skipped_duplicates?.length > 0) {
+        // Some uploaded, some skipped — proceed but note it
+        console.info('Skipped duplicates:', data.skipped_duplicates);
+      }
       onStarted();
     } catch (e) {
       setError(e.message);
