@@ -61,7 +61,7 @@ except Exception:
     )
     print("LOCAL mode: Using heuristic extraction.")
 
-UPLOAD_DIR = Path("/tmp/kriyadocs_uploads")
+UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "/tmp/kriyadocs_uploads"))
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 # Legacy in-memory stores (kept for QC/Knowledge Agent tab compatibility)

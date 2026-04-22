@@ -11,7 +11,7 @@ from extractor.pass2_extract import extract_rules_for_category
 from extractor.dedup import deduplicate_session_rules
 from models import Session as SessionModel, UploadedFile, Rule, _uuid, _now
 
-UPLOAD_DIR = Path("/tmp/kriyadocs_uploads")
+UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "/tmp/kriyadocs_uploads"))
 
 
 def run_extraction_pipeline(session_id: str, db: DBSession) -> None:
