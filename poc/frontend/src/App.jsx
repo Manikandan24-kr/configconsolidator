@@ -415,7 +415,11 @@ function ReviewView({ sessionId, onBack }) {
   const [addingRule, setAddingRule] = useState(false);
   const [loading, setLoading] = useState(true);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const [addFilesOpen, setAddFilesOpen] = useState(false);
+  const [extracting, setExtracting] = useState(false);
+  const [extractProgress, setExtractProgress] = useState({ progress: 0, message: '' });
   const exportMenuRef = useRef(null);
+  const pollRef = useRef(null);
 
   const fetchData = useCallback(async () => {
     try {
@@ -432,6 +436,24 @@ function ReviewView({ sessionId, onBack }) {
   }, [sessionId]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
+
+  const startPolling = useCallback(() => {
+    setExtracting(true);
+    pollRef.current = setInterval(async () => {
+      try {
+        const res = await fetch(`${API}/sessions/${sessionId}/status`);
+        const data = await res.json();
+        setExtractProgress({ progress: data.progress, message: data.message });
+        if (data.status === 'review' || data.status === 'completed') {
+          clearInterval(pollRef.current);
+          setExtracting(false);
+          fetchData();
+        }
+      } catch (e) { /* keep polling */ }
+    }, 2000);
+  }, [sessionId, fetchData]);
+
+  useEffect(() => () => clearInterval(pollRef.current), []);
 
   useEffect(() => {
     const handler = (e) => {
@@ -556,8 +578,11 @@ function ReviewView({ sessionId, onBack }) {
               <div className="cc-progress-fill" style={{ width: `${overallPct}%` }} />
             </div>
           </div>
+          <button className="btn cc-btn-icon" onClick={() => setAddFilesOpen(true)} disabled={extracting}>
+            <Icons.UploadSm /> Add Style Guide
+          </button>
           <div className="cc-export-wrap" ref={exportMenuRef}>
-            <button className="btn cc-btn-icon" onClick={() => setExportMenuOpen(!exportMenuOpen)}>
+            <button className="btn cc-btn-icon" onClick={() => setExportMenuOpen(!exportMenuOpen)} disabled={extracting}>
               <Icons.Download /> Export
             </button>
             {exportMenuOpen && (
@@ -569,6 +594,16 @@ function ReviewView({ sessionId, onBack }) {
           </div>
         </div>
       </div>
+
+      {extracting && (
+        <div className="cc-inline-progress">
+          <div className="spinner" style={{ width: 20, height: 20, margin: 0, flexShrink: 0 }} />
+          <div className="cc-inline-progress-bar">
+            <div className="cc-inline-progress-fill" style={{ width: `${extractProgress.progress}%` }} />
+          </div>
+          <span className="cc-inline-progress-msg">{extractProgress.message || 'Extracting…'} {extractProgress.progress}%</span>
+        </div>
+      )}
 
       <div className="cc-review-body">
         <div className="cc-category-sidebar">
@@ -660,6 +695,97 @@ function ReviewView({ sessionId, onBack }) {
           onClose={() => { setEditingRule(null); setAddingRule(false); }}
         />
       )}
+
+      {addFilesOpen && (
+        <AddFilesModal
+          sessionId={sessionId}
+          onClose={() => setAddFilesOpen(false)}
+          onStarted={() => { setAddFilesOpen(false); startPolling(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+
+// ── Add Files Modal ───────────────────────────────────────────────
+function AddFilesModal({ sessionId, onClose, onStarted }) {
+  const [files, setFiles] = useState([]);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState('');
+  const fileInputRef = useRef(null);
+
+  const handleFiles = (selected) => {
+    const pdfs = Array.from(selected).filter(f => f.name.toLowerCase().endsWith('.pdf'));
+    setFiles(prev => {
+      const existing = new Set(prev.map(f => f.name));
+      return [...prev, ...pdfs.filter(f => !existing.has(f.name))];
+    });
+  };
+
+  const handleUploadAndExtract = async () => {
+    if (!files.length) return;
+    setUploading(true);
+    setError('');
+    try {
+      const formData = new FormData();
+      files.forEach(f => formData.append('files', f));
+      const res = await fetch(`${API}/sessions/${sessionId}/add-files`, {
+        method: 'POST',
+        body: formData,
+      });
+      if (!res.ok) throw new Error((await res.json()).detail || 'Upload failed');
+      onStarted();
+    } catch (e) {
+      setError(e.message);
+      setUploading(false);
+    }
+  };
+
+  return (
+    <div className="cc-edit-overlay" onClick={onClose}>
+      <div className="cc-edit-panel" style={{ width: 520 }} onClick={e => e.stopPropagation()}>
+        <div className="cc-edit-header">
+          <h3>Add Style Guide</h3>
+          <button className="cc-icon-btn" onClick={onClose}><Icons.X /></button>
+        </div>
+        <div className="cc-edit-body">
+          <p style={{ fontSize: 13, color: 'var(--gray-500)', marginBottom: 16 }}>
+            Upload additional PDFs. New rules will be extracted and merged with the existing ruleset — duplicates removed automatically.
+          </p>
+          <div
+            className="upload-zone"
+            style={{ padding: 32 }}
+            onClick={() => fileInputRef.current?.click()}
+            onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add('dragover'); }}
+            onDragLeave={e => e.currentTarget.classList.remove('dragover')}
+            onDrop={e => { e.preventDefault(); e.currentTarget.classList.remove('dragover'); handleFiles(e.dataTransfer.files); }}
+          >
+            <Icons.Upload />
+            <h3 style={{ fontSize: 14 }}>Drop PDFs here or click to browse</h3>
+            <input ref={fileInputRef} type="file" accept=".pdf" multiple style={{ display: 'none' }} onChange={e => handleFiles(e.target.files)} />
+          </div>
+          {files.length > 0 && (
+            <div className="cc-file-list" style={{ marginTop: 12 }}>
+              {files.map(f => (
+                <div key={f.name} className="cc-file-item">
+                  <Icons.FileText />
+                  <span className="cc-file-name">{f.name}</span>
+                  <span className="cc-file-size">{(f.size / 1024).toFixed(0)} KB</span>
+                  <button className="cc-icon-btn cc-danger" onClick={() => setFiles(prev => prev.filter(p => p.name !== f.name))}><Icons.X /></button>
+                </div>
+              ))}
+            </div>
+          )}
+          {error && <div className="cc-error-banner" style={{ marginTop: 12 }}><Icons.AlertTriangle /> {error}</div>}
+        </div>
+        <div className="cc-edit-footer">
+          <button className="btn" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary cc-btn-icon" onClick={handleUploadAndExtract} disabled={uploading || files.length === 0}>
+            <Icons.UploadSm /> {uploading ? 'Uploading…' : `Upload & Extract${files.length > 0 ? ` (${files.length})` : ''}`}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

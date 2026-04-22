@@ -28,7 +28,7 @@ from models import (
 )
 
 # ── Extraction pipeline ────────────────────────────────────────────────────────
-from extractor.pipeline import run_extraction_pipeline
+from extractor.pipeline import run_extraction_pipeline, run_incremental_pipeline
 
 # ── QC + Knowledge Agent (kept from POC) ──────────────────────────────────────
 from quality_checker import run_quality_check, qc_report_to_dict
@@ -254,6 +254,62 @@ def _run_extraction_bg(session_id: str):
             db.commit()
     finally:
         db.close()
+
+
+def _run_incremental_bg(session_id: str, new_file_ids: list):
+    from database import SessionLocal
+    db = SessionLocal()
+    try:
+        run_incremental_pipeline(session_id, new_file_ids, db)
+    except Exception as e:
+        session = db.query(SessionModel).filter(SessionModel.id == session_id).first()
+        if session:
+            session.status = "review"
+            session.extraction_message = f"Extraction error: {str(e)}"
+            db.commit()
+    finally:
+        db.close()
+
+
+@app.post("/api/sessions/{session_id}/add-files")
+async def add_files_to_session(
+    session_id: str,
+    files: List[UploadFile] = File(...),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    db: DBSession = Depends(get_db),
+):
+    """Upload additional PDFs to an existing session and trigger incremental extraction."""
+    session = _get_session_or_404(session_id, db)
+    session_dir = UPLOAD_DIR / session_id
+    session_dir.mkdir(parents=True, exist_ok=True)
+
+    new_file_ids = []
+    for f in files:
+        if not f.filename.lower().endswith(".pdf"):
+            continue
+        dest = session_dir / f.filename
+        content = await f.read()
+        dest.write_bytes(content)
+
+        uf = UploadedFile(
+            id=_uuid(),
+            session_id=session_id,
+            filename=f.filename,
+            filepath=str(dest),
+            status="pending",
+        )
+        db.add(uf)
+        db.flush()
+        new_file_ids.append(uf.id)
+
+    session.total_pdfs = db.query(UploadedFile).filter(UploadedFile.session_id == session_id).count()
+    session.status = "extracting"
+    session.extraction_progress = 0
+    session.extraction_message = f"Queued extraction for {len(new_file_ids)} new file(s)..."
+    db.commit()
+
+    background_tasks.add_task(_run_incremental_bg, session_id, new_file_ids)
+    return {"files_uploaded": len(new_file_ids), "session_id": session_id, "status": "extracting"}
 
 
 @app.get("/api/sessions/{session_id}/status")
