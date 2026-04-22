@@ -100,8 +100,8 @@ class AddRuleRequest(BaseModel):
     remarks: Optional[str] = None
 
 class BulkStatusRequest(BaseModel):
-    category: str
-    status: str
+    rule_ids: List[str]
+    action: str  # "confirm" or "exclude"
 
 class QCRequest(BaseModel):
     text: str
@@ -287,7 +287,7 @@ def list_rules(
     if status:
         q = q.filter(Rule.status == status)
     rules = q.order_by(Rule.category, Rule.sort_order, Rule.created_at).all()
-    return [_rule_to_dict(r) for r in rules]
+    return {"rules": [_rule_to_dict(r) for r in rules]}
 
 
 @app.patch("/api/rules/{rule_id}")
@@ -401,27 +401,27 @@ def bulk_update_rules(
 ):
     _get_session_or_404(session_id, db)
 
-    if req.status not in VALID_RULE_STATUSES:
-        raise HTTPException(400, f"Invalid status")
-    if req.category not in VALID_CATEGORIES:
-        raise HTTPException(400, f"Invalid category")
+    if req.action not in ("confirm", "exclude"):
+        raise HTTPException(400, "action must be 'confirm' or 'exclude'")
+
+    new_status = "confirmed" if req.action == "confirm" else "excluded"
 
     rules = db.query(Rule).filter(
         Rule.session_id == session_id,
-        Rule.category == req.category,
+        Rule.id.in_(req.rule_ids),
     ).all()
 
     for rule in rules:
         old_status = rule.status
-        rule.status = req.status
+        rule.status = new_status
         rule.updated_at = _now()
         log = AuditLog(
             id=_uuid(),
             session_id=session_id,
             rule_id=rule.id,
-            action=f"bulk_{req.status}",
+            action=f"bulk_{new_status}",
             old_value=json.dumps({"status": old_status}),
-            new_value=json.dumps({"status": req.status}),
+            new_value=json.dumps({"status": new_status}),
         )
         db.add(log)
 
@@ -443,7 +443,8 @@ def export_excel(
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
     session = _get_session_or_404(session_id, db)
-    customer_name = session.name
+    summary = _session_summary(session, db)
+    customer_name = summary["customer_name"] or session.name
 
     q = db.query(Rule).filter(Rule.session_id == session_id)
     if include == "confirmed":
@@ -529,6 +530,8 @@ def export_json(
     import io
 
     session = _get_session_or_404(session_id, db)
+    summary = _session_summary(session, db)
+    customer_name = summary["customer_name"] or session.name
 
     q = db.query(Rule).filter(Rule.session_id == session_id)
     if include == "confirmed":
@@ -548,14 +551,14 @@ def export_json(
         })
 
     payload = {
-        "customer": session.name,
+        "customer": customer_name,
         "generated": _now().isoformat(),
         "total_rules": sum(len(v) for v in rules_by_cat.values()),
         "categories": rules_by_cat,
     }
 
     date_str = _now().strftime("%Y%m%d")
-    safe_name = re.sub(r"[^\w\-]", "_", session.name)
+    safe_name = re.sub(r"[^\w\-]", "_", customer_name)
     filename = f"{safe_name}_ruleset_{date_str}.json"
     content = json.dumps(payload, indent=2)
 
